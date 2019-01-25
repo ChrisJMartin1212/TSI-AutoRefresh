@@ -1,0 +1,68 @@
+from bs4 import BeautifulSoup
+from urllib import request
+from httplib2 import Http
+from oauth2client import file, client, tools
+from googleapiclient import discovery
+import time
+
+# initialize API credentials
+get_ipython().run_line_magic('env', 'GOOGLE_APPLICATION_CREDENTIALS=tdi-nlp-1541365979569-d5e31efd80c7.json')
+SCOPES = ('https://www.googleapis.com/auth/spreadsheets')
+store = file.Storage('storage.json')
+creds = store.get()
+if not creds or creds.invalid:
+    flow = client.flow_from_clientsecrets('oauthkey.json', SCOPES)
+    creds = tools.run_flow(flow, store)
+SHEETS = discovery.build('sheets', 'v4', http=creds.authorize(Http()),cache_discovery=False)
+workbook = SHEETS.spreadsheets()
+
+# obtain table content as a list of rows
+soupRange = []
+fincen = request.urlopen('https://www.fincen.gov/news-room/enforcement-actions')
+soup = BeautifulSoup(fincen,"lxml")
+table = soup.find('table')
+table_body = soup.find('tbody')
+rows = table_body.find_all('tr')
+
+# process row data
+for row in rows:
+    cols = row.find_all('td')
+    cols = [ele.text.strip() for ele in cols]
+    link = rows[0].find('a')
+    if(link):
+        link = 'https://www.fincen.gov' + link['href'].replace('%25','%')
+    soupRange.append([cols[0],link,cols[1],time.asctime(time.localtime())])
+
+# upload a range to google sheets
+def sheetsPush(pushRange):
+    push = workbook.values().update(spreadsheetId='1Pw2iDiL9uxNka53E5a6gblC9k-l7_W5OI3cDGxemS3A',
+                                    range=('FincenEA!A1:D'+str(len(pushRange)+2)),
+                                    body={'values':pushRange},
+                                    valueInputOption='RAW').execute()
+
+pull = workbook.values().get(spreadsheetId='1Pw2iDiL9uxNka53E5a6gblC9k-l7_W5OI3cDGxemS3A',
+                            range='FincenEA!A:D').execute()
+sheetsRange = pull.get('values', [])[1:]
+
+updateRange = []
+for soupRow in soupRange:
+    updated = False # flag to check for update
+    for sheetsRow in sheetsRange:
+        if sheetsRow[0] == soupRow[0]: # if title match
+            sheetsRow[1] = soupRow[1] # update link
+            sheetsRow[2] = soupRow[2] # update publish date
+            sheetsRow[3] = soupRow[3] # update pull date
+            updated = True
+            break
+        elif sheetsRow[1] == soupRow[1]: # if link match
+            sheetsRow[0] = soupRow[0] # update title
+            sheetsRow[2] = soupRow[2] # update publish date
+            sheetsRow[3] = soupRow[3] # update pull date
+            updated = True
+            break
+    if not updated:
+        updateRange.append(soupRow) # store the new addition to the table
+if(updateRange):
+    sheetsRange = sheetsRange + updateRange # add the new docs
+
+sheetsPush(sheetsRange)
